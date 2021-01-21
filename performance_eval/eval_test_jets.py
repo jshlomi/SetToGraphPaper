@@ -4,9 +4,9 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 from sklearn import metrics
+import mpmath
 
 from dataloaders.jets_loader import JetGraphDataset
-from models.triplets_model import SetPartitionTri
 
 
 def _get_rand_index(labels, predictions):
@@ -87,7 +87,7 @@ def eval_jets_on_test_set(model):
     start = datetime.now()
     model_scores = {}
     model_scores['RI'] = np.vectorize(_get_rand_index)(target, pred)
-    model_scores['ARI'] = np.vectorize(metrics.adjusted_rand_score)(target, pred)
+    model_scores['ARI'] = np.vectorize(adjustedRI_onesided)(target, pred)
     model_scores['P'] = np.vectorize(_get_precision)(target, pred)
     model_scores['R'] = np.vectorize(_get_recall)(target, pred)
     model_scores['F1'] = np.vectorize(_f_measure)(target, pred)
@@ -124,14 +124,109 @@ def _predict_on_test_set(model):
         indx_list += list(trk_indxs)
 
         input_batch = torch.stack([test_ds[i][0] for i in trk_indxs])  # shape (B, N_i, 10)
-        if isinstance(model, SetPartitionTri):
-            predictions += list(model(input_batch, None)[0].cpu().data.numpy())
-        else:
-            edge_vals = model(input_batch).squeeze(1)
-            predictions += list(infer_clusters(edge_vals).cpu().data.numpy())  # Shape
+
+
+        edge_vals = model(input_batch).squeeze(1)
+        edge_scores = 0.5*(edge_vals + edge_vals.transpose(1, 2))
+        edge_scores = torch.sigmoid(edge_scores)
+        edge_scores[:, np.arange(N), np.arange(N)] = 1.
+        
+        pred_matrices = compute_clusters_with_partition_score(edge_scores)
+        pred_clusters = compute_vertex_assignment(pred_matrices)
+
+        predictions += list(pred_clusters.cpu().data.numpy())  # Shape
 
     sorted_predictions = [list(x) for _, x in sorted(zip(indx_list, predictions))]
     return sorted_predictions
+
+
+def compute_partition_score(edge_scores,pred_matrix):
+
+    score = -(pred_matrix*torch.log(edge_scores+0.0000000000001)+(1-pred_matrix)*torch.log(1-edge_scores+0.0000000000001))
+    #print(score.shape)
+    score = score.sum(dim=1).sum(dim=1)
+    return score
+
+
+def fill_gaps(edge_vals):
+
+    b, n, _ = edge_vals.shape
+    
+    with torch.no_grad():
+        
+        pred_matrices = edge_vals.ge(0.5).float() 
+        pred_matrices[:, np.arange(n), np.arange(n)] = 1.  # each node is always connected to itself
+        ones_now = pred_matrices.sum()
+        ones_before = ones_now - 1
+        while ones_now != ones_before:  # get connected components - each node connected to all in its component
+            ones_before = ones_now
+            pred_matrices = torch.matmul(pred_matrices, pred_matrices)
+            pred_matrices = pred_matrices.bool().float()  # remain as 0-1 matrices
+            ones_now = pred_matrices.sum()
+
+    return pred_matrices
+
+def compute_vertex_assignment(pred_matrix):
+    b, n, _ = pred_matrix.shape
+    pred_matrix[:, np.arange(n), np.arange(n)] = 1.
+    clusters = -1 * torch.ones((b, n))
+    tensor_1 = torch.tensor(1.)
+    for i in range(n):
+        clusters = torch.where(pred_matrix[:, i] == 1, i * tensor_1, clusters)
+    
+    return clusters.long()
+
+def compute_clusters_with_partition_score(edge_scores):
+    # assuming edge_scores has been symmetrized and sigmoid was applied to it
+    # edge scores shape is B,N,N
+    B,N,_ = edge_scores.shape
+    Ne = int(N*(N-1)/2)
+    
+    r,c = np.triu_indices(N,1)
+    r  = np.tile(r,B)
+    c = np.tile(c,B)
+    z = np.repeat( np.arange(B), Ne)
+    flat_edge_scores = edge_scores[z,r,c].view(B,Ne) #shape = B,Ne
+
+    sorted_values, indices = torch.sort(flat_edge_scores,descending=True)
+    
+    final_edge_decision = torch.zeros(B,N,N)
+    final_edge_decision[:, np.arange(N), np.arange(N)] = 1
+    flat_sorted_edge_decisions = torch.zeros(B,Ne)
+    
+    partition_scores = compute_partition_score(edge_scores,final_edge_decision)
+    
+    for edge_i in range(Ne):
+        
+        temp_edge_decision = flat_sorted_edge_decisions.clone()
+        
+        temp_edge_decision[:,edge_i] = torch.where(sorted_values[:,edge_i] > 0.5,torch.tensor(1),torch.tensor(0))
+        
+        #reverse the sorting,
+        temp_edge_decision_unsorted = temp_edge_decision.gather(1, indices.argsort(1))
+        temp_partition = torch.zeros(B,N,N)
+        temp_partition[z,r,c] = temp_edge_decision_unsorted.flatten()
+        temp_partition.transpose(2,1)[z,r,c] = temp_edge_decision_unsorted.flatten()
+        temp_partition = fill_gaps(temp_partition)
+        
+        temp_partition_scores = compute_partition_score(edge_scores,temp_partition)
+        
+        
+        temp_edge_decision[:,edge_i] = torch.where( (temp_partition_scores < partition_scores) & (sorted_values[:,edge_i] > 0.5) ,torch.tensor(1),torch.tensor(0) )
+        
+        flat_sorted_edge_decisions = temp_edge_decision
+        
+        temp_edge_decision_unsorted = temp_edge_decision.gather(1, indices.argsort(1))
+
+        final_edge_decision[z,r,c] = temp_edge_decision_unsorted.flatten()
+        final_edge_decision.transpose(2,1)[z,r,c] = temp_edge_decision_unsorted.flatten()
+        
+        partition_scores = compute_partition_score(edge_scores,fill_gaps(final_edge_decision))
+
+    final_edge_decision = fill_gaps(final_edge_decision)
+    
+    return final_edge_decision
+
 
 
 def infer_clusters(edge_vals):
@@ -161,4 +256,85 @@ def infer_clusters(edge_vals):
 
     return clusters.long()
 
+def rand_index(labels,predictions):
+    
+    n_items = len(labels)
+    if(n_items<2):
+        return 1
+    n_pairs = (n_items*(n_items-1))/2
 
+    correct_pairs = 0
+    for item_i in range(n_items):
+        for item_j in range(item_i+1,n_items):
+            label_true = labels[item_i]==labels[item_j]
+            pred_true = predictions[item_i]==predictions[item_j]
+            if (label_true and pred_true) or ((not label_true) and (not pred_true)):
+                correct_pairs+=1
+    
+    return correct_pairs/n_pairs
+
+
+def Expval(labels):
+    labels = np.array(labels)
+    n = len(labels)
+    nchoose2 = (n*(n-1))/2.0
+    k = len(list(set(labels)))
+    g = [len(np.where(labels==x)[0]) for x in list(set(labels))]
+    bn = float( mpmath.bell(n) )
+    bnmin1 = float( mpmath.bell(n-1) )
+    bnratio = bnmin1/bn
+    q = np.sum([(gi*(gi-1))/2 for gi in g])
+    return bnratio*(q/nchoose2)+(1-bnratio)*(1-(q/nchoose2))
+    
+    
+
+def adjustedRI_onesided(labels,predictions):
+    
+    ri = rand_index(labels,predictions)
+    expval = Expval(labels)
+    ari = (ri - expval)/(1-expval)
+    return ari
+
+def Error_count(labels,predictions):
+    n_items = len(labels)
+
+    true_positives = 0
+    false_positive = 0
+    false_negative = 0
+    
+    for item_i in range(n_items):
+        for item_j in range(item_i+1,n_items):
+            label_true = labels[item_i]==labels[item_j]
+            pred_true = predictions[item_i]==predictions[item_j]
+            if (label_true and pred_true):
+                true_positives+=1
+            if (not label_true) and pred_true:
+                false_positive+=1
+            if label_true and (not pred_true):
+                false_negative+=1
+    return true_positives,false_positive,false_negative
+
+def Recall(labels,predictions):
+    true_positives,false_positive,false_negative = Error_count(labels,predictions)
+    
+    if true_positives+false_negative == 0:
+        return 0
+    
+    return true_positives/(true_positives+false_negative)
+    
+def Precision(labels,predictions):
+    true_positives,false_positive,false_negative = Error_count(labels,predictions)
+    
+    if true_positives+false_positive == 0:
+        return 0
+    return true_positives/(true_positives+false_positive)
+
+def f_measure(labels,predictions):
+    
+    precision = Precision(labels,predictions)
+    recall = Recall(labels,predictions)
+    
+    if precision==0 or recall==0:
+        return 0
+    
+    return 2*(precision*recall)/(recall+precision)

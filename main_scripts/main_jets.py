@@ -27,9 +27,6 @@ os.chdir(project_dir)
 # Project dependencies
 from models.set_to_graph import SetToGraph
 from models.set_to_graph_siam import SetToGraphSiam
-from models.set_partition_mlp import SetPartitionMLP
-from models.set_partition_gnn import SetPartitionGNN
-from models.triplets_model import SetPartitionTri
 from dataloaders import jets_loader
 from performance_eval.eval_test_jets import eval_jets_on_test_set
 
@@ -48,7 +45,7 @@ def parse_args():
     argparser.add_argument('-b', '--bs', default=2048, type=int, help='Batch size to use')
     argparser.add_argument('--method', default='lin2', help='Method to transfer from sets to graphs: lin2 for S2G, lin5 for S2G+')
     argparser.add_argument('--res_dir', default='../experiments/jets_results', help='Results directory')
-    argparser.add_argument('--baseline', default=None, help='Use a baseline and not set2graph. mlp, gnn, siam or siam3.')
+    argparser.add_argument('--baseline', default=None, help='Use a baseline and not set2graph. siam or rnn.')
 
     argparser.add_argument('--debug_load', dest='debug_load', action='store_true', help='Load only a small subset of the data')
     argparser.add_argument('--save', dest='save', action='store_true', help='Whether to save all to disk')
@@ -57,7 +54,7 @@ def parse_args():
 
     args = argparser.parse_args()
 
-    assert args.baseline is None or args.baseline in ['mlp', 'gnn', 'siam', 'siam3']
+    assert args.baseline is None or args.baseline in ['siam', 'rnn']
 
     return args
 
@@ -225,12 +222,15 @@ def main():
     val_data = jets_loader.get_data_loader('validation', config.bs, config.debug_load)
 
     # Create model instance
-    if config.baseline == 'siam3':
-        model = SetPartitionTri(10, [384, 384, 384, 384, 20])
-    elif config.baseline == 'mlp':
-        model = SetPartitionMLP([512, 256, 512, 15*15], 10)
-    elif config.baseline == 'gnn':
-        model = SetPartitionGNN([350, 350, 300, 20], 10)
+    if config.baseline == 'rnn':
+        model = SetToGraph(10,
+                           out_features=1,
+                           set_fn_feats=[256, 256, 256, 256, 5],
+                           method=config.method,
+                           hidden_mlp=[256],
+                           predict_diagonal=False,
+                           attention=True,
+                           set_model_type='RNN')
     elif config.baseline == 'siam':
         model = SetToGraphSiam(10, [384, 384, 384, 384, 5], hidden_mlp=[256])
     else:
@@ -241,7 +241,8 @@ def main():
                            method=config.method,
                            hidden_mlp=[256],
                            predict_diagonal=False,
-                           attention=True)
+                           attention=True,
+                           set_model_type='deepset')
     print('Model:' , model)
     model = model.to(DEVICE)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

@@ -1,5 +1,7 @@
 # SetToGraphPaper
-This repository holds the code for the paper: https://arxiv.org/abs/2002.08772.
+
+This repository holds the code for the paper: https://arxiv.org/abs/2008.02831
+mostly the same as https://github.com/hadarser/SetToGraphPaper with some small modifications to the inference and baseline models.
 
 ## Data
 Before running the code for the jets experiments, the data should be downloaded using the following commands:
@@ -42,10 +44,6 @@ or
 ```
 python main_scripts/main_jets.py --method=lin5  # for S2G+
 ```
-or change `--method=...` with `--baseline=siam/siam3/gnn/mlp` for running a baseline. 
+or change `--method=...` with `--baseline=siam/rnn` for running a baseline. 
 
-2. To run the Delaunay triangulation with our hyper-parameters, run the main_delaunay.py script with the options `--many_sizes`/`--one_size` for n=50 or n\in{20,...,80}.
-Example:
-```
-python main_scripts/main_delaunay.py --one_size --method=lin2
-```
+

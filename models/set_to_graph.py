@@ -6,7 +6,7 @@ from models.layers import PsiSuffix
 
 
 class SetToGraph(nn.Module):
-    def __init__(self, in_features, out_features, set_fn_feats, method, hidden_mlp, predict_diagonal, attention, cfg=None):
+    def __init__(self, in_features, out_features, set_fn_feats, method, hidden_mlp, predict_diagonal, attention, set_model_type, cfg=None):
         """
         SetToGraph model.
         :param in_features: input set's number of features per data point
@@ -26,7 +26,12 @@ class SetToGraph(nn.Module):
             cfg = {}
         self.agg = cfg.get('agg', torch.sum)
 
-        self.set_model = DeepSet(in_features=in_features, feats=set_fn_feats, attention=attention, cfg=cfg)
+        self.set_model_type = set_model_type
+
+        if self.set_model_type=='deepset':
+            self.set_model = DeepSet(in_features=in_features, feats=set_fn_feats, attention=attention, cfg=cfg)
+        elif self.set_model_type=='RNN':
+            self.set_model = RNNmodel(in_features=in_features, feats=set_fn_feats, attention=attention, cfg=cfg)
 
         # Suffix - from last number of features, to 1 feature per entrance
         d2 = (2 if method == 'lin2' else 5) * set_fn_feats[-1]

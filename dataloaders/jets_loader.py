@@ -32,12 +32,11 @@ class JetGraphDataset(Dataset):
         Initialization
         :param which_set: either "train", "validation" or "test"
         :param debug_load: if True, will load only a small subset
-        :param random_permutation: if True, apply random permutation to the order of the nodes/vertices.
+        
         """
         assert which_set in ['train', 'validation', 'test']
         fname = {'train': 'training', 'validation': 'valid', 'test': 'test'}
 
-        self.random_permutation = random_permutation
         self.filename = os.path.join(data_dir, which_set, fname[which_set]+'_data.root')
         with uproot.open(self.filename) as f:
             tree = f['tree']
@@ -92,10 +91,9 @@ class JetGraphDataset(Dataset):
 
             partition_i = n_labels[i]
 
-            if self.random_permutation:
-                perm = np.random.permutation(n_nodes)
-                set_i = set_i[perm]  # random permutation
-                partition_i = partition_i[perm]  # random permuatation
+            sort_order = np.argsort(node_feats_i[4])
+            set_i = set_i[sort_order]
+
 
             tile = np.tile(partition_i, (self.n_nodes[i], 1))
             partition_as_graph_i = np.where((tile - tile.T), 0, 1)
