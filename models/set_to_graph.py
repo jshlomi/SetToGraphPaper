@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from models.deep_sets import DeepSet
 from models.layers import PsiSuffix
-
+from models.rnn import RNNmodel
 
 class SetToGraph(nn.Module):
     def __init__(self, in_features, out_features, set_fn_feats, method, hidden_mlp, predict_diagonal, attention, set_model_type, cfg=None):
@@ -18,7 +18,7 @@ class SetToGraph(nn.Module):
         :param attention: Bool. Use attention in DeepSets
         :param cfg: configurations of using second bias in DeepSetLayer, normalization method and aggregation for lin5.
         """
-        super(SetToGraph, self).__init__()
+        super().__init__()
         assert method in ['lin2', 'lin5']
 
         self.method = method
